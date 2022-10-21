@@ -1,6 +1,6 @@
 # An Analysis of Parsing as Tagging
 <p align="center">
-  <img src="https://github.com/rycolab/parsing-tools/blob/main/header.jpg" width=400>
+  <img src="https://github.com/rycolab/parsing-as-tagging/blob/main/header.jpg" width=400>
 </p>
 This repository contains code for training and evaluation of parsing as tagging methods for constituency parsing.
 
