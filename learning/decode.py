@@ -1,4 +1,4 @@
-## PUBLIC API: code from: https://github.com/nikitakit/tetra-tagging
+## code adopted from: https://github.com/nikitakit/tetra-tagging
 
 import numpy as np
 
@@ -90,10 +90,8 @@ class BeamSearch:
             )
 
         masked_scores = all_new_scores[None, :, :] + np.where(
-            all_new_stack_depths[None, :, :]
-            == self.valid_depths[:, None, None],
-            0.0,
-            -np.inf,
+            all_new_stack_depths[None, :, :] == self.valid_depths[:, None, None],
+            0.0, -np.inf,
         )
         masked_scores = masked_scores.reshape(self.valid_depths.shape[0], -1)
         idxs = np.argsort(-masked_scores)[:, : self.keep_per_depth].flatten()
@@ -173,7 +171,6 @@ class GreedySearch(BeamSearch):
         backptrs = backptrs[transition_valid]
         labels = labels[transition_valid]
 
-
         self.beam = Beam(
             all_new_scores[backptrs, labels],
             all_new_stack_depths[backptrs, labels],
@@ -181,4 +178,3 @@ class GreedySearch(BeamSearch):
             backptrs,
             labels,
         )
-

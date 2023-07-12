@@ -4,16 +4,18 @@ import os.path
 import re
 import subprocess
 import tempfile
+from copy import deepcopy
+from typing import Tuple
 
 import numpy as np
 import torch
+from sklearn.metrics import precision_recall_fscore_support
 from tqdm import tqdm as tq
 
 from tagging.tree_tools import create_dummy_tree
 
 
 class ParseMetrics(object):
-    # Code from: https://github.com/mrdrozdov/self-attentive-parser-with-extra-features/blob/master/src/evaluate.py
     def __init__(self, recall, precision, fscore, complete_match, tagging_accuracy=100):
         self.recall = recall
         self.precision = precision
@@ -23,11 +25,11 @@ class ParseMetrics(object):
 
     def __str__(self):
         if self.tagging_accuracy < 100:
-            return "(Recall={:.2f}, Precision={:.2f}, ParseMetrics={:.2f}, CompleteMatch={:.2f}, TaggingAccuracy={:.2f})".format(
+            return "(Recall={:.4f}, Precision={:.4f}, ParseMetrics={:.4f}, CompleteMatch={:.4f}, TaggingAccuracy={:.4f})".format(
                 self.recall, self.precision, self.fscore, self.complete_match,
                 self.tagging_accuracy)
         else:
-            return "(Recall={:.2f}, Precision={:.2f}, ParseMetrics={:.2f}, CompleteMatch={:.2f})".format(
+            return "(Recall={:.4f}, Precision={:.4f}, ParseMetrics={:.4f}, CompleteMatch={:.4f})".format(
                 self.recall, self.precision, self.fscore, self.complete_match)
 
 
@@ -35,7 +37,7 @@ def report_eval_loss(model, eval_dataloader, device, n_iter, writer) -> np.ndarr
     loss = []
     for batch in eval_dataloader:
         batch = {k: v.to(device) for k, v in batch.items()}
-        with torch.no_grad():
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
             outputs = model(**batch)
             loss.append(torch.mean(outputs[0]).cpu())
 
@@ -46,29 +48,44 @@ def report_eval_loss(model, eval_dataloader, device, n_iter, writer) -> np.ndarr
     return mean_loss
 
 
-def predict(model, eval_dataloader, dataset_size, num_tags, batch_size, device) -> ([], []):
+def predict(
+        model, eval_dataloader, dataset_size, num_tags, batch_size, device
+) -> Tuple[np.array, np.array]:
     model.eval()
-    predictions = np.zeros((dataset_size, 256, num_tags))
-    eval_labels = np.zeros((dataset_size, 256), dtype=int)
+    predictions = []
+    eval_labels = []
+    max_len = 0
     idx = 0
-    for batch in tq(eval_dataloader):
-        if idx * batch_size >= dataset_size:
-            break
+
+    for batch in tq(eval_dataloader, disable=True):
         batch = {k: v.to(device) for k, v in batch.items()}
-        with torch.no_grad():
+
+        with torch.no_grad(), torch.cuda.amp.autocast(
+                enabled=True, dtype=torch.bfloat16
+        ):
             outputs = model(**batch)
 
-        logits = outputs[1]
-        predictions[idx * batch_size:(idx + 1) * batch_size, :, :] = logits.cpu().numpy()
-        labels = batch['labels']
-        eval_labels[idx * batch_size:(idx + 1) * batch_size, :] = labels.cpu().numpy()
+        logits = outputs[1].float().cpu().numpy()
+        max_len = max(max_len, logits.shape[1])
+        predictions.append(logits)
+        labels = batch['labels'].int().cpu().numpy()
+        eval_labels.append(labels)
         idx += 1
+
+    predictions = np.concatenate([np.pad(logits,
+                                         ((0, 0), (0, max_len - logits.shape[1]), (0, 0)),
+                                         'constant', constant_values=0) for logits in
+                                  predictions], axis=0)
+    eval_labels = np.concatenate([np.pad(labels, ((0, 0), (0, max_len - labels.shape[1])),
+                                         'constant', constant_values=0) for labels in
+                                  eval_labels], axis=0)
 
     return predictions, eval_labels
 
 
-def calc_tag_accuracy(predictions, eval_labels, num_leaf_labels, writer, use_tensorboard) -> (
-float, float):
+def calc_tag_accuracy(
+        predictions, eval_labels, num_leaf_labels, writer, use_tensorboard
+) -> Tuple[float, float]:
     even_predictions = predictions[..., -num_leaf_labels:]
     odd_predictions = predictions[..., :-num_leaf_labels]
     even_labels = eval_labels % (num_leaf_labels + 1) - 1
@@ -90,7 +107,124 @@ float, float):
         writer.add_pr_curve('odd_tags_pr_curve', odd_labels, odd_predictions, 0)
         writer.add_pr_curve('even_tags_pr_curve', even_labels, even_predictions, 1)
     return even_acc, odd_acc
-    return even_acc, odd_acc
+
+
+def get_dependency_from_lexicalized_tree(lex_tree, triple_dict, offset=0):
+    # this recursion assumes projectivity
+    # Input:
+    #     root of lex-tree
+    # Output:
+    #     the global index of the dependency root
+    if type(lex_tree) not in {str, dict} and len(lex_tree) == 1:
+        # unary rule
+        # returning the global index of the head
+        return offset
+
+    head_branch_index = int(lex_tree.label().split("^^^")[1])
+    head_global_index = None
+    branch_to_global_dict = {}
+
+    for branch_id_child, child in enumerate(lex_tree):
+        global_id_child = get_dependency_from_lexicalized_tree(
+            child, triple_dict, offset=offset
+        )
+        offset = offset + len(child.leaves())
+        branch_to_global_dict[branch_id_child] = global_id_child
+        if branch_id_child == head_branch_index:
+            head_global_index = global_id_child
+
+    for branch_id_child, child in enumerate(lex_tree):
+        if branch_id_child != head_branch_index:
+            triple_dict[branch_to_global_dict[branch_id_child]] = head_global_index
+
+    return head_global_index
+
+
+def is_punctuation(pos):
+    punct_set = '.' '``' "''" ':' ','
+    return (pos in punct_set) or (pos in ['PU', 'PUNCT'])  # for chinese
+
+
+def tree_to_dep_triples(lex_tree):
+    triple_dict = {}
+    dep_triples = []
+    sent_root = get_dependency_from_lexicalized_tree(
+        lex_tree, triple_dict
+    )
+    # the root of the whole sentence should refer to ROOT
+    assert sent_root not in triple_dict
+    # the root of the sentence
+    triple_dict[sent_root] = -1
+    for head, tail in sorted(triple_dict.items()):
+        dep_triples.append((
+            head, tail,
+            lex_tree.pos()[head][1].split("^^^")[1].split("+")[0],
+            lex_tree.pos()[head][1].split("^^^")[1].split("+")[1]
+        ))
+    return dep_triples
+
+
+def dependency_eval(
+        predictions, eval_labels, eval_dataset, tag_system, output_path,
+        model_name, max_depth, keep_per_depth, is_greedy
+) -> ParseMetrics:
+    # This can be parallelized!
+    predicted_dev_triples, predicted_dev_triples_unlabeled = [], []
+    gold_dev_triples, gold_dev_triples_unlabeled = [], []
+    c_err = 0
+    for i in tq(range(predictions.shape[0]), disable=True):
+        logits = predictions[i]
+        is_word = (eval_labels[i] != 0)
+
+        original_tree = deepcopy(eval_dataset.trees[i])
+        original_tree.collapse_unary(collapsePOS=True, collapseRoot=True)
+
+        try:  # ignore the ones that failed in unchomsky_normal_form
+            tree = tag_system.logits_to_tree(
+                logits, original_tree.pos(),
+                mask=is_word,
+                max_depth=max_depth,
+                keep_per_depth=keep_per_depth,
+                is_greedy=is_greedy
+            )
+            tree.collapse_unary(collapsePOS=True, collapseRoot=True)
+        except Exception as ex:
+            template = "An exception of type {0} occurred. Arguments:\n{1!r}"
+            message = template.format(type(ex).__name__, ex.args)
+            c_err += 1
+            predicted_dev_triples.append(create_dummy_tree(original_tree.pos()))
+            continue
+        if tree.leaves() != original_tree.leaves():
+            c_err += 1
+            predicted_dev_triples.append(create_dummy_tree(original_tree.pos()))
+            continue
+
+        gt_triples = tree_to_dep_triples(original_tree)
+        pred_triples = tree_to_dep_triples(tree)
+        assert len(gt_triples) == len(
+            pred_triples), f"wrong length {len(gt_triples)} vs. {len(pred_triples)}!"
+
+        for x, y in zip(sorted(gt_triples), sorted(pred_triples)):
+            if is_punctuation(x[3]):
+                # ignoring punctuations for evaluation
+                continue
+            assert x[0] == y[0], f"wrong tree {gt_triples} vs. {pred_triples}!"
+            gold_dev_triples.append(f"{x[0]}-{x[1]}-{x[2].split(':')[0]}")
+            gold_dev_triples_unlabeled.append(f"{x[0]}-{x[1]}")
+
+            predicted_dev_triples.append(f"{y[0]}-{y[1]}-{y[2].split(':')[0]}")
+            predicted_dev_triples_unlabeled.append(f"{y[0]}-{y[1]}")
+
+    logging.warning("Number of binarization error: {}\n".format(c_err))
+    las_recall, las_precision, las_fscore, _ = precision_recall_fscore_support(
+        gold_dev_triples, predicted_dev_triples, average='micro'
+    )
+    uas_recall, uas_precision, uas_fscore, _ = precision_recall_fscore_support(
+        gold_dev_triples_unlabeled, predicted_dev_triples_unlabeled, average='micro'
+    )
+
+    return (ParseMetrics(las_recall, las_precision, las_fscore, complete_match=1),
+            ParseMetrics(uas_recall, uas_precision, uas_fscore, complete_match=1))
 
 
 def calc_parse_eval(predictions, eval_labels, eval_dataset, tag_system, output_path,
@@ -105,7 +239,9 @@ def calc_parse_eval(predictions, eval_labels, eval_dataset, tag_system, output_p
         gold_dev_trees.append(original_tree)
         try:  # ignore the ones that failed in unchomsky_normal_form
             tree = tag_system.logits_to_tree(logits, original_tree.pos(), mask=is_word,
-                                             max_depth=max_depth, keep_per_depth=keep_per_depth, is_greedy=is_greedy)
+                                             max_depth=max_depth,
+                                             keep_per_depth=keep_per_depth,
+                                             is_greedy=is_greedy)
         except Exception as ex:
             template = "An exception of type {0} occurred. Arguments:\n{1!r}"
             message = template.format(type(ex).__name__, ex.args)
@@ -120,8 +256,7 @@ def calc_parse_eval(predictions, eval_labels, eval_dataset, tag_system, output_p
         predicted_dev_trees.append(tree)
 
     logging.warning("Number of binarization error: {}".format(c_err))
-    # save_predictions(predicted_dev_trees, output_path + model_name + "_predictions.txt")
-    # save_predictions(gold_dev_trees, output_path + model_name + "_gold.txt")
+
     return evalb("EVALB_SPMRL/", gold_dev_trees, predicted_dev_trees)
 
 
