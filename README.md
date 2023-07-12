@@ -1,4 +1,4 @@
-# An Analysis of Parsing as Tagging
+# Parsing as Tagging
 <p align="center">
   <img src="https://github.com/rycolab/parsing-as-tagging/blob/main/header.jpg" width=400>
   <img src="https://github.com/rycolab/parsing-as-tagging/blob/main/header-hexa.png" width=400>
