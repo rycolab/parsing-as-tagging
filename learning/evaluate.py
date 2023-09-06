@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 from copy import deepcopy
 from typing import Tuple
+import tempfile
 
 import numpy as np
 import torch
@@ -14,6 +15,7 @@ from tqdm import tqdm as tq
 
 from tagging.tree_tools import create_dummy_tree
 
+repo_directory = os.path.abspath(__file__)
 
 class ParseMetrics(object):
     def __init__(self, recall, precision, fscore, complete_match, tagging_accuracy=100):
@@ -142,7 +144,7 @@ def get_dependency_from_lexicalized_tree(lex_tree, triple_dict, offset=0):
 
 def is_punctuation(pos):
     punct_set = '.' '``' "''" ':' ','
-    return (pos in punct_set) or (pos in ['PU', 'PUNCT'])  # for chinese
+    return (pos in punct_set) or (pos.lower() in ['pu', 'punct'])  # for CTB & UD
 
 
 def tree_to_dep_triples(lex_tree):
@@ -168,10 +170,15 @@ def dependency_eval(
         predictions, eval_labels, eval_dataset, tag_system, output_path,
         model_name, max_depth, keep_per_depth, is_greedy
 ) -> ParseMetrics:
+    ud_flag = eval_dataset.language not in {'English', 'Chinese'}
+
     # This can be parallelized!
     predicted_dev_triples, predicted_dev_triples_unlabeled = [], []
     gold_dev_triples, gold_dev_triples_unlabeled = [], []
     c_err = 0
+
+    gt_triple_data, pred_triple_data = [], []
+
     for i in tq(range(predictions.shape[0]), disable=True):
         logits = predictions[i]
         is_word = (eval_labels[i] != 0)
@@ -201,19 +208,61 @@ def dependency_eval(
 
         gt_triples = tree_to_dep_triples(original_tree)
         pred_triples = tree_to_dep_triples(tree)
+
+        gt_triple_data.append(gt_triples)
+        pred_triple_data.append(pred_triples)
+
         assert len(gt_triples) == len(
             pred_triples), f"wrong length {len(gt_triples)} vs. {len(pred_triples)}!"
 
         for x, y in zip(sorted(gt_triples), sorted(pred_triples)):
-            if is_punctuation(x[3]):
+            if is_punctuation(x[3]) and not ud_flag:
                 # ignoring punctuations for evaluation
                 continue
             assert x[0] == y[0], f"wrong tree {gt_triples} vs. {pred_triples}!"
+
             gold_dev_triples.append(f"{x[0]}-{x[1]}-{x[2].split(':')[0]}")
             gold_dev_triples_unlabeled.append(f"{x[0]}-{x[1]}")
 
             predicted_dev_triples.append(f"{y[0]}-{y[1]}-{y[2].split(':')[0]}")
             predicted_dev_triples_unlabeled.append(f"{y[0]}-{y[1]}")
+
+    if ud_flag:
+        # UD
+        predicted_dev_triples, predicted_dev_triples_unlabeled = [], []
+        gold_dev_triples, gold_dev_triples_unlabeled = [], []
+
+        language, split = eval_dataset.language, eval_dataset.split.split(".")[-1]
+
+        gold_temp_out, pred_temp_out = tempfile.mktemp(dir=os.path.dirname(repo_directory)), \
+                                       tempfile.mktemp(dir=os.path.dirname(repo_directory))
+        gold_temp_in, pred_temp_in = gold_temp_out + ".deproj", pred_temp_out + ".deproj"
+
+
+        save_triplets(gt_triple_data, gold_temp_out)
+        save_triplets(pred_triple_data, pred_temp_out)
+
+        for filename, tgt_filename in zip([gold_temp_out, pred_temp_out], [gold_temp_in, pred_temp_in]):
+            command = f"cd ./malt/maltparser-1.9.2/; java -jar maltparser-1.9.2.jar -c {language}_{split} -m deproj" \
+                    f" -i {filename} -o {tgt_filename} ; cd ../../"
+            os.system(command)
+
+        loaded_gold_dev_triples = load_triplets(gold_temp_in)
+        loaded_pred_dev_triples = load_triplets(pred_temp_in)
+
+        for gt_triples, pred_triples in zip(loaded_gold_dev_triples, loaded_pred_dev_triples):
+            for x, y in zip(sorted(gt_triples), sorted(pred_triples)):
+                if is_punctuation(x[3]):
+                    # ignoring punctuations for evaluation
+                    continue
+                assert x[0] == y[0], f"wrong tree {gt_triples} vs. {pred_triples}!"
+
+                gold_dev_triples.append(f"{x[0]}-{x[1]}-{x[2].split(':')[0]}")
+                gold_dev_triples_unlabeled.append(f"{x[0]}-{x[1]}")
+
+                predicted_dev_triples.append(f"{y[0]}-{y[1]}-{y[2].split(':')[0]}")
+                predicted_dev_triples_unlabeled.append(f"{y[0]}-{y[1]}")
+        
 
     logging.warning("Number of binarization error: {}\n".format(c_err))
     las_recall, las_precision, las_fscore, _ = precision_recall_fscore_support(
@@ -225,6 +274,38 @@ def dependency_eval(
 
     return (ParseMetrics(las_recall, las_precision, las_fscore, complete_match=1),
             ParseMetrics(uas_recall, uas_precision, uas_fscore, complete_match=1))
+
+
+def save_triplets(triplet_data, file_path):
+    # save triplets to file in conll format
+    with open(file_path, 'w') as f:
+        for triplets in triplet_data:
+            for triplet in triplets:
+                # 8	Витоша	витоша	PROPN	Npfsi	Definite=Ind|Gender=Fem|Number=Sing	6	nmod	_	_
+                head, tail, label, pos = triplet
+                f.write(f"{head+1}\t-\t-\t{pos}\t-\t-\t{tail+1}\t{label}\t_\t_\n")
+            f.write('\n')
+
+    return
+
+
+def load_triplets(file_path):
+    # load triplets from file in conll format
+    triplet_data = []
+    with open(file_path, 'r') as f:
+        triplets = []
+        for line in f.readlines():
+            if line.startswith('#') or line == '\n':
+                if triplets:
+                    triplet_data.append(triplets)
+                triplets = []
+                continue
+            line_list = line.strip().split('\t')
+            head, tail, label, pos = line_list[0], line_list[6], line_list[7], line_list[3]
+            triplets.append((head, tail, label, pos))
+        if triplets:
+            triplet_data.append(triplets)
+    return triplet_data
 
 
 def calc_parse_eval(predictions, eval_labels, eval_dataset, tag_system, output_path,

@@ -50,6 +50,7 @@ class TaggingDataset(torch.utils.data.Dataset):
                  language="english", pad_to_len=None,
                  max_train_len=350):
         self.reader = reader
+        self.split = split
         self.trees = self.reader.parsed_sents(split)
         self.tokenizer = tokenizer
         self.language = language
