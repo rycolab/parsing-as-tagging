@@ -74,7 +74,7 @@ CUDA_VISIBLE_DEVICES=0 python run.py train --lang Chinese --max-depth 6 --tagger
 
 ### UD
 ```bash
-python run.py evaluate --lang bg --max-depth 10 --tagger hexa --bert-model-path bert-base-multilingual-cased --model-name bg-hexa-bert-1e-05-50 --batch-size 32 --model-path ./checkpoints/                                    
+CUDA_VISIBLE_DEVICES=0 python run.py train --lang bg --max-depth 6 --tagger hexa --model bert --epochs 50  --batch-size 32 --lr 2e-5 --model-path bert-base-multilingual-cased --output-path ./checkpoints/ --use-tensorboard True
 ```
 ## Evaluate
 ### PTB
