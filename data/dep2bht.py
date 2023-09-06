@@ -103,7 +103,7 @@ def dep2lex(dep_tree, language="English"):
                 f"X^^^{dep_tree.nodes[node_idx]['rel']}",
                 [
                     Tree(
-                        f"{dep_tree.nodes[node_idx]['tag']}",
+                        f"{dep_tree.nodes[node_idx]['ctag']}",
                         [
                             f"{dep_tree.nodes[node_idx]['word']}"
                         ]
@@ -135,7 +135,7 @@ def dep2lex(dep_tree, language="English"):
                     f"X^^^{dep_tree.nodes[dependency[0]]['rel']}",
                     [
                         Tree(
-                            f"{dep_tree.nodes[dependency[0]]['tag']}",
+                            f"{dep_tree.nodes[dependency[0]]['ctag']}",
                             [
                                 f"{dep_tree.nodes[dependency[0]]['word']}"
                             ]
@@ -175,7 +175,7 @@ def dep2lex_right_first(dep_tree, language="English"):
                 f"X^^^{dep_tree.nodes[node_idx]['rel']}",
                 [
                     Tree(
-                        f"{dep_tree.nodes[node_idx]['tag']}",
+                        f"{dep_tree.nodes[node_idx]['ctag']}",
                         [
                             f"{dep_tree.nodes[node_idx]['word']}"
                         ]
@@ -215,7 +215,7 @@ def dep2lex_right_first(dep_tree, language="English"):
                     f"X^^^{dep_tree.nodes[dependency[0]]['rel']}",
                     [
                         Tree(
-                            f"{dep_tree.nodes[dependency[0]]['tag']}",
+                            f"{dep_tree.nodes[dependency[0]]['ctag']}",
                             [
                                 f"{dep_tree.nodes[dependency[0]]['word']}"
                             ]
@@ -249,16 +249,27 @@ if __name__ == "__main__":
     repo_directory = os.path.abspath(__file__)
     for language in [
         "English",  # PTB
-        "Chinese"  # CTB
+        "Chinese",  # CTB
+        "bg","ca","cs","de","en","es","fr","it","nl","no","ro","ru" # UD2.2
     ]:
         print(f"Processing {language}...")
         if language == "English":
             path = os.path.dirname(repo_directory) + "/ptb/ptb_{split}_3.3.0.sd.clean"
-            paths = [path.format(language=language, split=split) for split in
-                     ["train", "dev", "test"]]
+            paths = [path.format(split=split) for split in ["train", "dev", "test"]]
         elif language == "Chinese":
             path = os.path.dirname(repo_directory) + "/ctb/{split}.ctb.conll"
             paths = [path.format(split=split) for split in ["train", "dev", "test"]]
+        elif language in ["bg", "ca","cs","de","en","es","fr","it","nl","no","ro","ru"]:
+            path = os.path.dirname(repo_directory)+f"/ctb_ptb_ud22/ud2.2/{LANG_TO_DIR[language]}"
+            paths = []
+            groups = re.match(r'(\w+)_\w+-ud-(\w+)\.conllu', os.path.split(path)[-1])
+
+            for split in ["train", "dev", "test"]:
+                conll_path = path.format(split=split)
+                command = f"cd ../malt/maltparser-1.9.2/; java -jar maltparser-1.9.2.jar -c {language}_{split} -m proj" \
+                        f" -i {conll_path} -o {conll_path}.proj -pp head"
+                os.system(command)
+                paths.append(conll_path + ".proj")
 
         reader = DependencyCorpusReader(
             os.path.dirname(repo_directory),
