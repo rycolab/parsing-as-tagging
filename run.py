@@ -102,9 +102,9 @@ def initialize_tag_system(reader, tagging_schema, lang, tag_vocab_path="",
             tag_vocab = pickle.load(f)
 
     if tagging_schema == HEXATAGGER:
-        # for lexicalized tree
+        # for BHT
         tag_system = HexaTagger(
-            trees=reader.parsed_sents(lang + '.lex.train'),
+            trees=reader.parsed_sents(lang + '.bht.train'),
             tag_vocab=tag_vocab, add_remove_top=False
         )
     else:
@@ -122,7 +122,7 @@ def get_data_path(tagger):
 def save_vocab(args):
     data_path = get_data_path(args.tagger)
     if args.tagger == HEXATAGGER:
-        prefix = args.lang + ".lex"
+        prefix = args.lang + ".bht"
     else:
         prefix = args.lang
     reader = BracketParseCorpusReader(
@@ -135,7 +135,7 @@ def save_vocab(args):
 
 def prepare_training_data(reader, tag_system, tagging_schema, model_name, batch_size, lang):
     is_tetratags = True if tagging_schema == TETRATAGGER or tagging_schema == HEXATAGGER else False
-    prefix = lang + ".lex" if tagging_schema == HEXATAGGER else lang
+    prefix = lang + ".bht" if tagging_schema == HEXATAGGER else lang
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_name, truncation=True, use_fast=True)
@@ -155,7 +155,7 @@ def prepare_training_data(reader, tag_system, tagging_schema, model_name, batch_
 
 def prepare_test_data(reader, tag_system, tagging_schema, model_name, batch_size, lang):
     is_tetratags = True if tagging_schema == TETRATAGGER or tagging_schema == HEXATAGGER else False
-    prefix = lang + ".lex" if tagging_schema == HEXATAGGER else lang
+    prefix = lang + ".bht" if tagging_schema == HEXATAGGER else lang
 
     print(f"Evaluating {model_name}, {tagging_schema}")
     tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -273,7 +273,7 @@ def register_run_metrics(writer, run_name, lr, epochs, eval_loss, even_tag_accur
 
 def train(args):
     if args.tagger == HEXATAGGER:
-        prefix = args.lang + ".lex"
+        prefix = args.lang + ".bht"
     else:
         prefix = args.lang
     data_path = get_data_path(args.tagger)
@@ -482,7 +482,7 @@ def evaluate(args):
     data_path = get_data_path(tagging_schema)  # HexaTagger or others
     print("Evaluation Args", args)
     if args.tagger == HEXATAGGER:
-        prefix = args.lang + ".lex"
+        prefix = args.lang + ".bht"
     else:
         prefix = args.lang
     reader = BracketParseCorpusReader(
