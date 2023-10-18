@@ -166,6 +166,7 @@ def tree_to_dep_triples(lex_tree):
     return dep_triples
 
 
+
 def dependency_eval(
         predictions, eval_labels, eval_dataset, tag_system, output_path,
         model_name, max_depth, keep_per_depth, is_greedy
@@ -432,3 +433,114 @@ def evalb(evalb_dir, gold_trees, predicted_trees, ref_gold_path=None) -> ParseMe
         print("Output path: {}".format(output_path))
 
     return fscore
+
+
+
+
+def dependency_decoding(
+        predictions, eval_labels, eval_dataset, tag_system, output_path,
+        model_name, max_depth, keep_per_depth, is_greedy
+) -> ParseMetrics:
+    ud_flag = eval_dataset.language not in {'English', 'Chinese'}
+
+    # This can be parallelized!
+    predicted_dev_triples, predicted_dev_triples_unlabeled = [], []
+    gold_dev_triples, gold_dev_triples_unlabeled = [], []
+    pred_hexa_tags = []
+    c_err = 0
+
+    gt_triple_data, pred_triple_data = [], []
+
+    for i in tq(range(predictions.shape[0]), disable=True):
+        logits = predictions[i]
+        is_word = (eval_labels[i] != 0)
+
+        original_tree = deepcopy(eval_dataset.trees[i])
+        original_tree.collapse_unary(collapsePOS=True, collapseRoot=True)
+
+        try:  # ignore the ones that failed in unchomsky_normal_form
+            tree = tag_system.logits_to_tree(
+                logits, original_tree.pos(),
+                mask=is_word,
+                max_depth=max_depth,
+                keep_per_depth=keep_per_depth,
+                is_greedy=is_greedy
+            )
+            hexa_ids = tag_system.logits_to_ids(
+                logits, is_word, max_depth, keep_per_depth, is_greedy=is_greedy
+            )
+            pred_hexa_tags.append(hexa_ids)
+
+            tree.collapse_unary(collapsePOS=True, collapseRoot=True)
+        except Exception as ex:
+            template = "An exception of type {0} occurred. Arguments:\n{1!r}"
+            message = template.format(type(ex).__name__, ex.args)
+            c_err += 1
+            predicted_dev_triples.append(create_dummy_tree(original_tree.pos()))
+            continue
+        if tree.leaves() != original_tree.leaves():
+            c_err += 1
+            predicted_dev_triples.append(create_dummy_tree(original_tree.pos()))
+            continue
+
+        gt_triples = tree_to_dep_triples(original_tree)
+        pred_triples = tree_to_dep_triples(tree)
+
+        gt_triple_data.append(gt_triples)
+        pred_triple_data.append(pred_triples)
+
+        assert len(gt_triples) == len(
+            pred_triples), f"wrong length {len(gt_triples)} vs. {len(pred_triples)}!"
+
+        for x, y in zip(sorted(gt_triples), sorted(pred_triples)):
+            if is_punctuation(x[3]) and not ud_flag:
+                # ignoring punctuations for evaluation
+                continue
+            assert x[0] == y[0], f"wrong tree {gt_triples} vs. {pred_triples}!"
+
+            gold_dev_triples.append(f"{x[0]}-{x[1]}-{x[2].split(':')[0]}")
+            gold_dev_triples_unlabeled.append(f"{x[0]}-{x[1]}")
+
+            predicted_dev_triples.append(f"{y[0]}-{y[1]}-{y[2].split(':')[0]}")
+            predicted_dev_triples_unlabeled.append(f"{y[0]}-{y[1]}")
+
+    if ud_flag:
+        # UD
+        predicted_dev_triples, predicted_dev_triples_unlabeled = [], []
+        gold_dev_triples, gold_dev_triples_unlabeled = [], []
+
+        language, split = eval_dataset.language, eval_dataset.split.split(".")[-1]
+
+        gold_temp_out, pred_temp_out = tempfile.mktemp(dir=os.path.dirname(repo_directory)), \
+                                       tempfile.mktemp(dir=os.path.dirname(repo_directory))
+        gold_temp_in, pred_temp_in = gold_temp_out + ".deproj", pred_temp_out + ".deproj"
+
+
+        save_triplets(gt_triple_data, gold_temp_out)
+        save_triplets(pred_triple_data, pred_temp_out)
+
+        for filename, tgt_filename in zip([gold_temp_out, pred_temp_out], [gold_temp_in, pred_temp_in]):
+            command = f"cd ./malt/maltparser-1.9.2/; java -jar maltparser-1.9.2.jar -c {language}_{split} -m deproj" \
+                    f" -i {filename} -o {tgt_filename} ; cd ../../"
+            os.system(command)
+
+        loaded_gold_dev_triples = load_triplets(gold_temp_in)
+        loaded_pred_dev_triples = load_triplets(pred_temp_in)
+
+        for gt_triples, pred_triples in zip(loaded_gold_dev_triples, loaded_pred_dev_triples):
+            for x, y in zip(sorted(gt_triples), sorted(pred_triples)):
+                if is_punctuation(x[3]):
+                    # ignoring punctuations for evaluation
+                    continue
+                assert x[0] == y[0], f"wrong tree {gt_triples} vs. {pred_triples}!"
+
+                gold_dev_triples.append(f"{x[0]}-{x[1]}-{x[2].split(':')[0]}")
+                gold_dev_triples_unlabeled.append(f"{x[0]}-{x[1]}")
+
+                predicted_dev_triples.append(f"{y[0]}-{y[1]}-{y[2].split(':')[0]}")
+                predicted_dev_triples_unlabeled.append(f"{y[0]}-{y[1]}")
+        
+    return {
+        "predicted_dev_triples": predicted_dev_triples,
+        "predicted_hexa_tags": pred_hexa_tags
+    }

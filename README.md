@@ -66,20 +66,23 @@ The above commands can be used together with different taggers, models, and on d
 ### PTB (English)
 ```bash
 CUDA_VISIBLE_DEVICES=0 python run.py train --lang English --max-depth 6 --tagger hexa --model bert --epochs 50 --batch-size 32 --lr 2e-5 --model-path xlnet-large-cased --output-path ./checkpoints/ --use-tensorboard True
+# model saved at ./checkpoints/English-hexa-bert-3e-05-50
 ```
 ### CTB (Chinese)
 ```bash
 CUDA_VISIBLE_DEVICES=0 python run.py train --lang Chinese --max-depth 6 --tagger hexa --model bert --epochs 50 --batch-size 32 --lr 2e-5 --model-path hfl/chinese-xlnet-mid --output-path ./checkpoints/ --use-tensorboard True
+# model saved at ./checkpoints/Chinese-hexa-bert-2e-05-50
 ```
 
 ### UD
 ```bash
 CUDA_VISIBLE_DEVICES=0 python run.py train --lang bg --max-depth 6 --tagger hexa --model bert --epochs 50  --batch-size 32 --lr 2e-5 --model-path bert-base-multilingual-cased --output-path ./checkpoints/ --use-tensorboard True
 ```
+
 ## Evaluate
 ### PTB
 ```bash
-python run.py evaluate --lang English --max-depth 10 --tagger hexa --bert-model-path xlnet-large-cased --model-name English-hexa-bert-3e-05-50 --batch-size 64 --model-path ./
+python run.py evaluate --lang English --max-depth 10 --tagger hexa --bert-model-path xlnet-large-cased --model-name English-hexa-bert-3e-05-50 --batch-size 64 --model-path ./checkpoints/
 ```
 
 ### CTB
@@ -89,6 +92,13 @@ python run.py evaluate --lang Chinese --max-depth 10 --tagger hexa --bert-model-
 ### UD
 ```bash
 python run.py evaluate --lang bg --max-depth 10 --tagger hexa --bert-model-path bert-base-multilingual-cased --model-name bg-hexa-bert-1e-05-50 --batch-size 64 --model-path ./checkpoints/
+```
+
+
+## Predict
+### PTB
+```bash
+python run.py predict --lang English --max-depth 10 --tagger hexa --bert-model-path xlnet-large-cased --model-name English-hexa-bert-3e-05-50 --batch-size 64 --model-path ./checkpoints/
 ```
 
 # Citation

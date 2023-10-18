@@ -3,6 +3,7 @@ import logging
 import pickle
 import random
 import sys
+import json
 
 import numpy as np
 import torch
@@ -15,7 +16,7 @@ from tqdm import tqdm as tq
 
 from const import *
 from learning.dataset import TaggingDataset
-from learning.evaluate import predict, dependency_eval, calc_parse_eval, calc_tag_accuracy
+from learning.evaluate import predict, dependency_eval, calc_parse_eval, calc_tag_accuracy, dependency_decoding
 from learning.learn import ModelForTetratagging
 from tagging.hexatagger import HexaTagger
 
@@ -39,15 +40,16 @@ parser = argparse.ArgumentParser()
 subparser = parser.add_subparsers(dest='command')
 train = subparser.add_parser('train')
 evaluate = subparser.add_parser('evaluate')
+predict_parser = subparser.add_parser('predict')
 vocab = subparser.add_parser('vocab')
 
-vocab.add_argument('--tagger', choices=[HEXATAGGER], required=True,
+vocab.add_argument('--tagger', choices=[HEXATAGGER, TETRATAGGER, TD_SR, BU_SR], required=True,
                    help="Tagging schema")
 vocab.add_argument('--lang', choices=LANG, default=ENG, help="Language")
-vocab.add_argument('--output-path', choices=[HEXATAGGER],
+vocab.add_argument('--output-path', choices=[HEXATAGGER, TETRATAGGER, TD_SR, BU_SR],
                    default="data/vocab/")
 
-train.add_argument('--tagger', choices=[HEXATAGGER], required=True,
+train.add_argument('--tagger', choices=[HEXATAGGER, TETRATAGGER, TD_SR, BU_SR], required=True,
                    help="Tagging schema")
 train.add_argument('--lang', choices=LANG, default=ENG, help="Language")
 train.add_argument('--tag-vocab-path', type=str, default="data/vocab/")
@@ -75,7 +77,7 @@ train.add_argument('--weight-decay', type=float, default=0.01)
 
 evaluate.add_argument('--model-name', type=str, required=True)
 evaluate.add_argument('--lang', choices=LANG, default=ENG, help="Language")
-evaluate.add_argument('--tagger', choices=[TETRATAGGER, TD_SR, BU_SR, HEXATAGGER],
+evaluate.add_argument('--tagger', choices=[HEXATAGGER, TETRATAGGER, TD_SR, BU_SR],
                       required=True,
                       help="Tagging schema")
 evaluate.add_argument('--tag-vocab-path', type=str, default="data/vocab/")
@@ -90,6 +92,27 @@ evaluate.add_argument('--is-greedy', type=bool, default=False,
 evaluate.add_argument('--keep-per-depth', type=int, default=1,
                       help="Max elements to keep per depth")
 evaluate.add_argument('--use-tensorboard', type=bool, default=False,
+                      help="Whether to use the tensorboard for logging the results make sure "
+                           "to add credentials to run.py if set to true")
+
+
+predict_parser.add_argument('--model-name', type=str, required=True)
+predict_parser.add_argument('--lang', choices=LANG, default=ENG, help="Language")
+predict_parser.add_argument('--tagger', choices=[HEXATAGGER, TETRATAGGER, TD_SR, BU_SR],
+                      required=True,
+                      help="Tagging schema")
+predict_parser.add_argument('--tag-vocab-path', type=str, default="data/vocab/")
+predict_parser.add_argument('--model-path', type=str, default='pat-models/')
+predict_parser.add_argument('--bert-model-path', type=str, default='mbert/')
+predict_parser.add_argument('--output-path', type=str, default='results/')
+predict_parser.add_argument('--batch-size', type=int, default=16)
+predict_parser.add_argument('--max-depth', type=int, default=10,
+                      help="Max stack depth used for decoding")
+predict_parser.add_argument('--is-greedy', type=bool, default=False,
+                      help="Whether or not to use greedy decoding")
+predict_parser.add_argument('--keep-per-depth', type=int, default=1,
+                      help="Max elements to keep per depth")
+predict_parser.add_argument('--use-tensorboard', type=bool, default=False,
                       help="Whether to use the tensorboard for logging the results make sure "
                            "to add credentials to run.py if set to true")
 
@@ -271,7 +294,7 @@ def register_run_metrics(writer, run_name, lr, epochs, eval_loss, even_tag_accur
                         'even_tag_accuracy': even_tag_accuracy})
 
 
-def train(args):
+def train_command(args):
     if args.tagger == HEXATAGGER:
         prefix = args.lang + ".bht"
     else:
@@ -477,7 +500,7 @@ def calc_num_tags_per_task(tagging_schema, tag_system):
     return num_leaf_labels, num_tags
 
 
-def evaluate(args):
+def evaluate_command(args):
     tagging_schema, model_type = decode_model_name(args.model_name)
     data_path = get_data_path(tagging_schema)  # HexaTagger or others
     print("Evaluation Args", args)
@@ -532,12 +555,67 @@ def evaluate(args):
         print(parse_metrics)
 
 
+def predict_command(args):
+    tagging_schema, model_type = decode_model_name(args.model_name)
+    data_path = get_data_path(tagging_schema)  # HexaTagger or others
+    print("predict Args", args)
+
+    if args.tagger == HEXATAGGER:
+        prefix = args.lang + ".bht"
+    else:
+        prefix = args.lang
+    reader = BracketParseCorpusReader(
+        data_path,
+        [prefix + '.train', prefix + '.dev', prefix + '.test'])
+    writer = SummaryWriter(comment=args.model_name)
+    logging.info("Initializing Tag System")
+    tag_system = initialize_tag_system(reader, tagging_schema, args.lang,
+                                       tag_vocab_path=args.tag_vocab_path,
+                                       add_remove_top=True)
+    logging.info("Preparing Data")
+    eval_dataset, eval_dataloader = prepare_test_data(
+        reader, tag_system, tagging_schema,
+        args.bert_model_path, args.batch_size,
+        args.lang)
+
+    is_eng = True if args.lang == ENG else False
+    model = initialize_model(
+        model_type, tagging_schema, tag_system, args.bert_model_path, is_eng
+    )
+    model.load_state_dict(torch.load(args.model_path + args.model_name))
+    model.to(device)
+
+    num_leaf_labels, num_tags = calc_num_tags_per_task(tagging_schema, tag_system)
+
+    predictions, eval_labels = predict(
+        model, eval_dataloader, len(eval_dataset),
+        num_tags, args.batch_size, device)
+    
+    if tagging_schema == HEXATAGGER:
+        pred_output = dependency_decoding(
+            predictions, eval_labels, eval_dataset,
+            tag_system, args.output_path, args.model_name,
+            args.max_depth, args.keep_per_depth, False)
+
+        with open(args.output_path + args.model_name + ".pred.json", "w") as fout:
+            json.dump(pred_output, fout)
+
+        """pred_output contains: {
+            "predicted_dev_triples": predicted_dev_triples,
+            "predicted_hexa_tags": pred_hexa_tags
+        }"""
+
+
+
+
 def main():
     args = parser.parse_args()
     if args.command == 'train':
-        train(args)
+        train_command(args)
     elif args.command == 'evaluate':
-        evaluate(args)
+        evaluate_command(args)
+    elif args.command == 'predict':
+        predict_command(args)
     elif args.command == 'vocab':
         save_vocab(args)
 
