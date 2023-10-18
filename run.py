@@ -564,19 +564,17 @@ def predict_command(args):
         prefix = args.lang + ".bht"
     else:
         prefix = args.lang
-    reader = BracketParseCorpusReader(
-        data_path,
-        [prefix + '.train', prefix + '.dev', prefix + '.test'])
+    reader = BracketParseCorpusReader(data_path, [])
     writer = SummaryWriter(comment=args.model_name)
     logging.info("Initializing Tag System")
-    tag_system = initialize_tag_system(reader, tagging_schema, args.lang,
+    tag_system = initialize_tag_system(None, tagging_schema, args.lang,
                                        tag_vocab_path=args.tag_vocab_path,
                                        add_remove_top=True)
     logging.info("Preparing Data")
     eval_dataset, eval_dataloader = prepare_test_data(
         reader, tag_system, tagging_schema,
         args.bert_model_path, args.batch_size,
-        args.lang)
+        "input")
 
     is_eng = True if args.lang == ENG else False
     model = initialize_model(
