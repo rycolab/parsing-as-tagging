@@ -598,6 +598,7 @@ def predict_command(args):
             args.max_depth, args.keep_per_depth, False)
 
         with open(args.output_path + args.model_name + ".pred.json", "w") as fout:
+            print("Saving predictions to", args.output_path + args.model_name + ".pred.json")
             json.dump(pred_output, fout)
 
         """pred_output contains: {
