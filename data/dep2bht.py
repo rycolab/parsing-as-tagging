@@ -4,6 +4,7 @@ from nltk.corpus.reader import DependencyCorpusReader
 from nltk.corpus.reader.util import *
 from nltk.tree import Tree
 from tqdm import tqdm as tq
+import sys
 
 LANG_TO_DIR = {
     "bg": "/UD_Bulgarian-BTB/bg_btb-ud-{split}.conllu",
@@ -247,6 +248,33 @@ def dep2lex_right_first(dep_tree, language="English"):
 
 if __name__ == "__main__":
     repo_directory = os.path.abspath(__file__)
+
+    if len(sys.argv) > 1:
+        path = sys.argv[1]
+        reader = DependencyCorpusReader(
+            os.path.dirname(repo_directory),
+            [path],
+        )
+        dep_trees = reader.parsed_sents(path)
+
+        bhts = []
+        for dep_tree in tq(dep_trees):
+            lex_tree = dep2lex(dep_tree, language="input")
+            bhts.append(lex_tree)
+            lex_tree_leaves = tuple(lex_tree.leaves())
+            dep_tree_leaves = tuple(
+                [str(node["word"]) for _, node in sorted(dep_tree.nodes.items())])
+
+            dep_tree_leaves = dep_tree_leaves[1:]
+
+        print(f"Writing BHTs to {os.path.dirname(repo_directory)}/input.bht.test")
+        with open(os.path.dirname(repo_directory) + f"/bht/input.bht.test",
+                    "w") as fout:
+            for lex_tree in bhts:
+                fout.write(lex_tree._pformat_flat("", "()", False) + "\n")
+
+        exit(0)
+
     for language in [
         "English",  # PTB
         "Chinese",  # CTB
