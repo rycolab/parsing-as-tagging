@@ -1,3 +1,4 @@
+import os
 import argparse
 import logging
 import pickle
@@ -463,7 +464,9 @@ def train_command(args):
 
 def _save_best_model(model, output_path, run_name):
     logging.info("Saving The Newly Found Best Model")
-    torch.save(model.state_dict(), output_path + run_name)
+    os.makedirs(output_path, exist_ok=True)
+    to_save_file = os.path.join(output_path, run_name)
+    torch.save(model.state_dict(), to_save_file)
 
 
 def _finish_training(model, tag_system, eval_dataloader, eval_dataset, eval_loss,
